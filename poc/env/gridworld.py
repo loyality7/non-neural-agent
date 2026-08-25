@@ -23,23 +23,29 @@ COLORS = [RED, BLUE, GREEN]
 
 UPKEEP_COST = 1
 RED_EAT_BONUS = 20
+BAD_COLOR_PENALTY = 20
 START_ENERGY = 50
 STEP_CAP = 300
 
 
 class GridWorld:
-    def __init__(self, objects, agent_pos=(0, 0), seed=None, good_color=RED):
+    def __init__(self, objects, agent_pos=(0, 0), seed=None, good_color=RED, bad_color=None):
         """
         objects: mapping of (x, y) grid position to color string.
         good_color: the color that currently yields a reward on EAT. Kept
             as a parameter rather than a constant so the reward rule can be
             changed at runtime without modifying this class.
+        bad_color: an optional second, independent color that yields an
+            extra penalty on EAT, unrelated to good_color. Used to test
+            whether an agent can hold two independent rules at once
+            without them interfering in its learned statistics.
         """
         self.objects = dict(objects)
         self.agent_pos = agent_pos
         self.energy = START_ENERGY
         self.steps = 0
         self.good_color = good_color
+        self.bad_color = bad_color
 
     VISION_RADIUS = 2
 
@@ -67,6 +73,8 @@ class GridWorld:
             color = self.objects.get(self.agent_pos)
             if color == self.good_color:
                 delta_energy = RED_EAT_BONUS - UPKEEP_COST
+            elif self.bad_color is not None and color == self.bad_color:
+                delta_energy = -BAD_COLOR_PENALTY - UPKEEP_COST
             # eating removes the object regardless of color
             if color is not None:
                 del self.objects[self.agent_pos]
@@ -89,7 +97,7 @@ class GridWorld:
         return self.energy > 0 and self.steps < STEP_CAP
 
 
-def fresh_training_world(good_color=RED):
+def fresh_training_world(good_color=RED, bad_color=None):
     """Standard training layout: a few of each color scattered around."""
     objects = {
         (1, 1): RED,
@@ -99,4 +107,4 @@ def fresh_training_world(good_color=RED):
         (3, 3): GREEN,
         (0, 7): GREEN,
     }
-    return GridWorld(objects, agent_pos=(4, 4), good_color=good_color)
+    return GridWorld(objects, agent_pos=(4, 4), good_color=good_color, bad_color=bad_color)

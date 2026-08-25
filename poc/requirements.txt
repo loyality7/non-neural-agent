@@ -1,0 +1,8 @@
+# Intentionally empty. Every module in this project (env/, agent/,
+# experiments/, stats_utils.py) uses only the Python standard library
+# (collections, random, statistics) -- no numpy, no scipy, and no machine
+# learning libraries of any kind. This reflects the project's design: all
+# learning is implemented through explicit statistical structures rather
+# than gradient-based optimization.
+#
+# Tested against Python 3.14.4. Any version >=3.9 should work.

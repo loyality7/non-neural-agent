@@ -704,6 +704,409 @@ structural choice that produces generalization Q-learning's
 *position-inclusive* state representation structurally cannot, regardless
 of how long either trains.
 
+## 20. Phase 6c result — habit formation (run 2026-08-25, 20 seeds)
+
+`poc/agent/habit.py`, `poc/experiments/exp6_habit_formation.py`. Every
+mechanism through Phase 6 lives in one flat layer: the agent re-derives
+its plan from scratch via value iteration every episode, and only ever
+acts on objects currently visible, falling back to random movement
+otherwise. This experiment tests whether compiling a repeatedly
+successful sequence into a directly executable routine — analogous to
+motor-schema formation in infant development — measurably helps, once the
+agent has already proven the sequence works.
+
+Mechanism: once a `(feature, key_state) → position` pairing has succeeded
+enough times (a fixed repetition threshold), the agent navigates directly
+to that remembered position without waiting for it to come into vision.
+Nothing about which position matters is given — it is only ever recorded
+after the agent has already reached and used it successfully on its own.
+
+**First run: no benefit, correctly diagnosed as a test-design confound,
+not a mechanism failure.** Evaluated on the easy layout (key one step
+from spawn), `value_iter` already completes in ~6 steps — near the
+theoretical floor. There was no headroom left for a habit to improve on.
+Same class of mistake as Phase 6's original confound (§18) — caught
+before drawing a conclusion from it, not after.
+
+**Second run, on the hard (far-key) layout, uncovered a real bug in the
+compile criterion.** The criterion used raw immediate reward
+(`delta_energy > 0`) to decide whether a step was worth compiling. Since
+acquiring the key always pays zero or negative reward *by design* — that
+is the entire instrumental-value premise this project has been testing
+since Phase 4 — the key's position could structurally never compile under
+this criterion. Only the terminal red-eating step ever qualified. Result:
+the agent got habit-locked onto a remembered red position while still
+having to randomly rediscover the key every single episode — strictly
+worse than the uncompiled agent, not neutral (94.7 vs. 102.9 steps,
+worse success rate too).
+
+**Fix:** use the agent's own learned Q-value (`> 0`) as the compile
+criterion instead of raw reward — the same value-iteration signal that
+already, correctly, recognizes the key as worth pursuing (§17). Re-ran:
+
+```
+value_iter (re-derives plan each time):    94.7 steps / 0.47 success rate
+habit (compiled routine after threshold):  52.8 steps / 0.71 success rate
+
+habit beats value_iter on steps: significant, diff=41.9, 95% CI=[34.9, 49.1], Cohen's d=3.57
+```
+
+**PASS, cleanly, and on both axes at once — not a speed/reliability
+tradeoff.** Habit compilation cuts steps-to-success by 44% *and* raises
+the success rate from 0.47 to 0.71 within the same step budget. 20/20
+seeds compiled at least one routine. This is the first mechanism in the
+project where one phase's output structurally builds on and speeds up the
+previous phase's mechanism, rather than sitting beside it as an
+independent test — the specific flatness gap this phase was built to close.
+
+**Honesty flag kept in the record:** one seed's compiled-target dump
+showed `('green', False)` compiled despite green being a uniformly bad
+color (always −1 reward, never flips key state). Traced to the same
+unbounded-horizon MDP modeling artifact already disclosed in §17 (every
+EAT is treated as if the full future option-value remains available
+afterward, which can inflate a mediocre option's Q above zero even while
+correctly ranking it below yellow/red). This does not affect behavior —
+`_goal_feature` always selects the highest-Q feature to act on, and
+green's inflated-but-still-lower Q is never chosen over yellow's or red's
+— confirmed by the actual measured speed and reliability gains being
+real, not an artifact of this. Flagged rather than silently patched,
+since the underlying MDP simplification is a known, already-documented
+project limitation, not a new defect specific to this phase.
+
+**Built-in vs. emergent:** hand-designed — the repetition threshold and
+the compiled routine's structure (navigate directly to a remembered
+position, then act). Emergent — which position gets remembered, for which
+feature and key-state, and when the threshold is crossed; none of this is
+given in advance, all of it is a consequence of the agent's own prior
+successful experience.
+
+## 21. Multi-concept interference test (run 2026-08-25, 20 seeds)
+
+`poc/experiments/exp7_multi_concept.py`. Every prior experiment tested one
+rule (or one conjunctive rule) at a time. This tests whether the agent can
+hold two independent, unrelated rules simultaneously — red rewarding,
+blue penalized, both active in the same world — without either estimate
+being corrupted by the other's presence.
+
+```
+learned value for red:  single-rule 19.0/0.0  vs.  multi-rule 19.0/0.0
+learned value for blue: single-rule -21.0/0.0 vs.  multi-rule -21.0/0.0
+green (unrelated distractor), multi-rule: -1.0/0.0
+
+head-to-head in multi-rule world -- picks RED: 0.61/0.08, picks BLUE: 0.15/0.08
+
+paired diff (multi - single), red:  mean=0.0, 95% CI=[0.0, 0.0] -- no shift
+paired diff (multi - single), blue: mean=0.0, 95% CI=[0.0, 0.0] -- no shift
+```
+
+**PASS — but read this one honestly, not as a hard-won result.** The
+learned values are not merely statistically indistinguishable, they are
+*exactly identical*, every seed, zero variance. That is not evidence the
+architecture narrowly survived a real interference risk — it is a direct
+consequence of how `ConceptTable` is built: keys are `(feature, action)`
+pairs in a plain dictionary, so red's and blue's accumulated statistics
+live in structurally disjoint entries with no shared capacity to collide
+in. There was never a mechanism by which learning about blue could have
+touched red's stored values, given this data structure. Reporting a PASS
+here is honest, but it should not be read as a discovery on the scale of
+Phase 4's conjunctive-rule result, which tested a genuine structural
+limit (a single-feature table *cannot* represent a two-condition rule).
+This test instead confirms an expected property of a feature-keyed table,
+which is worth having checked explicitly rather than assumed, but is not
+itself surprising.
+
+**What is a genuine, non-trivial finding here:** the head-to-head
+behavioral check. Knowing the *stored values* don't interfere doesn't by
+itself guarantee *correct behavior* — a bug in how the planner selects
+between simultaneously visible red and blue objects could still have
+produced confused or unreliable choices even with clean underlying
+values. It didn't: the agent reliably picks red over blue (0.61 vs 0.15)
+when both are visible together, confirming the correct values actually
+translate into correct action selection under real multi-concept
+pressure, not just correct bookkeeping.
+
+**Where the harder version of this test would actually live, for future
+reference:** a genuine test of interference risk would need a
+*shared-capacity* representation — a fixed-size hash table with possible
+key collisions, or (the neural case) shared weights across features —
+where two concepts really could compete for the same representational
+resource. A purely feature-keyed dictionary, as built here, cannot
+exhibit that failure mode by construction. Noted so this isn't
+mistakenly cited later as stronger evidence than it is.
+
+**Built-in vs. emergent:** hand-given — the two independent reward rules
+themselves (environment ground truth, never exposed as labels, same as
+every other experiment). Emergent — both learned values, and whether the
+resulting behavior correctly discriminates between them; not emergent,
+and stated as such above — that the *values* don't interfere is a
+property of the table's structure, not something the agent had to learn.
+
+## 22. Raw perception: self-discovered categories from noise (run 2026-08-25, 20 seeds)
+
+`poc/env/perception_world.py`, `poc/agent/perception.py`,
+`poc/agent/perception_agent.py`, `poc/experiments/exp8_perception.py`.
+Every prior experiment gave the agent a clean color string. This replaces
+it with a noisy multi-attribute numeric vector — each true color has a
+fixed underlying attribute vector, every observation is that vector plus
+Gaussian noise, and the agent never sees a color string at all. Before any
+causal learning can apply, the agent must first turn the noisy vectors
+into stable categories itself, via a simple non-neural online clusterer
+(nearest-centroid, spawn a new cluster if nothing is close enough — no
+merge step). This is the first genuine perceptual-discovery test in this
+project, flagged as the likely break point since research.md §6/§8/plan.md
+§0, on the strength of 30+ years of prior non-neural systems failing here.
+
+Two agents compared: `oracle` (given the true color directly, the
+ceiling — identical to every previous experiment's setup) and
+`perception` (given only noisy vectors, must cluster them itself).
+
+```
+agent         survival (mean/std)   transfer_rate (mean/std)
+oracle        82.3 / 0.6            0.39 / 0.13
+perception    82.3 / 0.5            0.37 / 0.08
+
+oracle beats perception on transfer: not significant (diff=0.02, Cohen's d=0.186)
+clusters discovered: 7.65 / 1.53 (true number of colors is 3)
+```
+
+**Not a clean PASS or FAIL — a real, precise, nuanced result, investigated
+rather than reported at face value.** The pre-registered gate checked two
+things: does perception match oracle's performance, and does clustering
+discover the correct category count. Performance: yes, matches oracle
+almost exactly, no significant gap. Category count: no — it substantially
+over-segments (found 6-8 clusters instead of 3).
+
+**Traced directly, not left as an unexplained number** (one seed's actual
+discovered clusters):
+```
+cluster 0: centroid=(0.90, 0.10, 0.20) count=1554   <- pure red, dominant
+cluster 1: centroid=(0.13, 0.10, 0.89) count=4723   <- blue, fragment A
+cluster 5: centroid=(-0.02, 0.08, 0.97) count=965   <- blue, fragment B
+cluster 2: centroid=(0.09, 0.92, 0.07) count=4010   <- green, fragment A
+cluster 3: centroid=(0.07, 0.76, 0.14) count=945    <- green, fragment B
+cluster 4: centroid=(0.21, 0.98, 0.19) count=739    <- green, fragment C
+
+concept table: cluster 0 -> +19.0 (correct), all others -> -1.0 (correct)
+```
+
+**The precise finding:** the simple non-neural clusterer (no merge
+mechanism) reliably separates the three *true* underlying categories from
+each other — every cluster's centroid sits unambiguously nearest its own
+true color, with **zero cross-color contamination** observed across every
+cluster in every seed inspected. But it over-segments *within* a true
+color into multiple redundant fragments, because early, noisy, low-sample
+centroids can drift just far enough that later legitimate members of the
+same true category fail to fall within the distance threshold and spawn a
+spurious new cluster that never gets merged back.
+
+**Why this didn't hurt performance here, stated precisely rather than
+assumed:** every fragment of a given true color still receives the exact
+same reward signal from the environment (blue and green are both
+uniformly −1 in this task), so each fragment independently converges to
+the *correct* value regardless of which fragment a given observation lands
+in. Splitting blue into two clusters is harmless when both clusters
+correctly learn "−1" separately. This is a real form of graceful
+degradation, not luck — but it is specific to this task's structure
+(binary good/neutral discrimination) and should not be read as evidence
+that over-segmentation is costless in general. A task requiring three-way
+or finer discrimination among semantically *different* values would very
+plausibly expose the cost of these redundant fragments never merging,
+since each fragment starts from zero and needs its own sample budget to
+converge, diluting the effective sample efficiency even where the
+asymptotic answer stays correct.
+
+**Reading this honestly against the pre-registered gate:** category-count
+accuracy failed; task performance did not. Recorded as **PARTIAL**, not
+rounded up to PASS and not reported as a plain FAIL either — both of
+those framings would misrepresent what was actually found. The
+literature-predicted collapse (research.md §2-3, §8: non-neural
+perception is the field's most consistent historical failure point) did
+not occur outright here, but a real, specific, measurable degradation
+(loss of category-count accuracy, addressed only because this task
+happens to be robust to it) did. That is a materially different,
+more precise finding than either extreme, and the honest one to report.
+
+**Built-in vs. emergent:** hand-given — the true attribute vectors per
+color, the noise level, and the clustering distance threshold (an untuned
+round number, same standard as every other hyperparameter in this
+project — a sensitivity sweep on this threshold is a natural next check,
+not yet run). Emergent — the actual clusters discovered, how many there
+are, which observations land in which, and the learned value per cluster;
+none of this is given, and critically, the *cross-color separation* that
+did emerge cleanly was never hand-coded — three true colors were
+correctly kept apart from each other using only unsupervised distance-based
+grouping over noisy numbers.
+
+## 23. Instrumental-value formula fix — direct vs. propagated value (run 2026-08-25)
+
+`poc/agent/organism.py`, built as a single reusable agent combining every
+mechanism proven across Experiments 0-9, replacing the one-off agent class
+per experiment. Generalized the two-state (`has_key`) value-iteration
+formula from `agent/value_iteration.py` to an arbitrary discrete context
+set, discovered from observation rather than hardcoded.
+
+**Real bug found in the first generalization attempt, not a hypothetical
+risk:** treating every feature's value as `direct_reward + gamma * V(next
+context)`, unconditionally, causes a feature that never changes context
+(a self-loop) to still inherit propagated value from whichever feature
+anywhere has the best value — because `V(context)` is itself defined as
+the best achievable value *from* that context, and a self-looping
+feature's own Q-value feeds back into that same `V(context)`, creating an
+unbounded fixed point (`V = R + γV`). Measured directly: an inert color
+(always −1, never causes anything) came back with a learned value of
+169 — nearly as large as the genuinely valuable feature's 189, despite
+having no real causal path to that value at all.
+
+**Fix, architectural not cosmetic:** value only propagates backward along
+a transition an agent has actually observed evidence for. A `(feature,
+context)` pair whose observed transitions all stay in the same context
+gets *only* its direct reward — no propagated term, full stop. Only pairs
+with real evidence of leading to a *different* context get the
+propagated term, and only using that portion of the observed transition
+distribution.
+
+Result after the fix, same test suite: `red=19.0`, `blue=-1.0`,
+`green=-1.0` (exact, matching the real environment reward, no leakage).
+On the harder key+red instrumental-value world: `Q(yellow, key=False)
+=16.1`, `Q(red, key=False)=-1.0`, `Q(red, key=True)=19.0` — same correct
+ranking the original Phase 5 mechanism produced, but now with sane,
+bounded, physically interpretable numbers instead of the inflated 169-189
+magnitudes Phase 5 had to explicitly flag as "not physically meaningful."
+This fix removes that artifact at the source rather than continuing to
+disclose it as an accepted limitation.
+
+**Built-in vs. emergent:** hand-designed — the direct/instrumental split
+itself, and the rule that instrumental value requires observed evidence
+of a real context transition. Emergent — everything else: which features
+cause transitions, to where, with what probability, and therefore every
+actual value in the system.
+
+## 24. Sequence order-learning and context-scaling (run 2026-08-25, 15-20 seeds)
+
+`poc/agent/sequence_memory.py`, `poc/env/sequence_world.py`,
+`poc/experiments/exp9_sequence_scaling.py`,
+`poc/experiments/exp10_context_scaling.py`. First test of a genuinely new
+capability axis: does the architecture hold *order* — does "A then B"
+mean something different from "B then A" — which nothing before this
+point in the project could represent at all (every prior mechanism was
+order-blind by construction). Built as a separate, dedicated structure
+(a plain count table keyed by preceding-symbol context, i.e. an n-gram
+model) rather than folded into the existing concept graph, deliberately
+avoiding the exact mistake just fixed in §23 — one structure trying to
+answer two different kinds of question.
+
+**The real question under test, stated precisely, was not "does order
+learning work" but "does it have its own version of the data-hunger
+problem historically associated with mainstream ML."** Raised directly:
+statistical n-gram models were largely abandoned in 2010s NLP specifically
+because data requirements grew combinatorially with added context length
+— the exact failure mode this project exists to test whether a
+non-gradient approach can avoid.
+
+**First pass gave a falsely clean PASS, caught before being trusted.**
+The initial convergence metric ("first checkpoint significantly beating a
+frequency-blind baseline") is too weak a bar — a model with a real but
+tiny effect (like a bigram model that is genuinely misspecified against
+an order-2 grammar) can clear that bar almost immediately since detecting
+*any* nonzero signal needs far less data than confirming the model has
+reached its actual ceiling. This is the same category of mistake as an
+earlier corrected misjudgment in this project (§12, the "thin margin"
+misread) — a significance check answering a different question than the
+one actually being asked.
+
+**Fixed metric (`exp9`, order-2 grammar, vocabulary 10, dominant
+probability 0.45):** convergence redefined as reaching 90% of the model's
+own final-checkpoint accuracy, still combined with a significance check.
+Result: bigram converged at 2000 transitions (target was ≤150 — badly
+missed), trigram at 1400 (target ≤750 — degraded but not the
+pre-registered 3000+ wall line). Trigram appearing to converge *faster*
+in absolute transition count than bigram, despite a 10x larger context
+space, was investigated rather than accepted at face value — traced to
+bigram's much smaller effect size (ceiling barely above chance) making
+the significance component of the metric slower to confirm, not to
+trigram genuinely needing less data. This made the two numbers not
+directly comparable as points on a scaling trend.
+
+**Second, cleaner test (`exp10`), metric decoupled from baseline
+significance entirely** — convergence redefined as reaching 95% of the
+model's own final accuracy, comparable across orders regardless of
+ceiling height. Vocabulary 6, dominant probability 0.5, tested order-1,
+order-2, and order-3 grammars on the same vocabulary:
+
+```
+order-1 (6 contexts):    converged at 100 transitions,   final accuracy 0.506
+order-2 (36 contexts):   converged at 900 transitions,   final accuracy 0.500
+order-3 (216 contexts):  converged at 3500 transitions,  final accuracy 0.503
+
+order-1 -> order-2 ratio: 9.0x   (naive theoretical expectation: ~6x)
+order-2 -> order-3 ratio: 3.9x   (naive theoretical expectation: ~6x)
+```
+
+**PASS — genuine friction, not the wall, with the ratio SHRINKING (9.0x →
+3.9x) rather than accelerating.** An accelerating ratio across successive
+orders would have been the specific, real signature of the historical
+n-gram failure mode; this data shows the opposite direction. Both ratios
+land close to the naive linear (vocabulary-size) prediction, the
+theoretically expected and survivable case.
+
+**Precise scope of what this does and does not establish, stated
+explicitly so it cannot be overclaimed later:**
+- Tested only through order-3, vocabulary size 6. Whether the trend holds
+  at order-4+ or with a substantially larger vocabulary is untested — the
+  wall, if one exists, is historically a joint function of vocabulary
+  size *and* context length together, not context length alone, and only
+  one small vocabulary was tested here.
+- Tested only pure next-symbol prediction in isolation. Once grounding,
+  compositionality, and working memory (the harder, still-unbuilt
+  capabilities) start interacting with sequence memory, new interference
+  effects could appear that a standalone bigram/trigram test cannot see.
+- The honest scope of this finding: **friction confirmed survivable at
+  small scale (order 1-3, vocabulary 6), with named, real, pre-neural
+  techniques (Kneser-Ney smoothing, Bayesian model-merging/backoff —
+  Stolcke & Omohundro 1994) as the pre-identified next architectural
+  piece if data needs worsen at larger scale** — not evidence the
+  problem is solved for good, and not claimed as such.
+
+**Built-in vs. emergent:** hand-given — the grammar itself (which context
+implies which dominant next symbol) is environment ground truth, never
+exposed to either model. Emergent — the transition counts, the
+predictions, and critically the actual number of examples needed to
+reach convergence at each order, measured directly per seed rather than
+assumed from theory.
+
+## 25. Grounding plumbing (run 2026-08-25) — mechanism not yet built
+
+Before attempting to link symbols (from §24's sequence memory) to earned
+world-concepts (from the concept graph), checked directly whether the two
+systems shared any timeline at all. They did not — confirmed by reading
+the code, not assumed, avoiding a repeat of the exact unverified-connection
+mistake §23 already found the hard way.
+
+Built `poc/env/grounding_world.py`: extends the base gridworld with a
+symbol attached to each object, exposed on the observation **only** when
+that object is the current interaction target (the object at the agent's
+own cell), never merely because it is visible nearby. Verified directly:
+standing on an object returns its symbol; moving off but leaving it
+visible in the surrounding radius correctly returns no symbol — the exact
+case a looser, proximity-based version would have silently gotten wrong.
+Existing gridworld/concept-graph code is completely unmodified; only one
+new optional observation field was added.
+
+Four scope decisions stated explicitly rather than left implicit:
+simultaneous symbol/object timing (a known simplification, real language
+exposure is rarely this aligned), strict current-target co-occurrence
+(not proximity), a minimal separable log format, and object-only symbols
+for now (verb-grounding flagged, not silently dropped).
+
+**Not yet built:** the actual co-occurrence learning mechanism (how the
+symbol-concept link accumulates and whether it needs the same windowed,
+non-lifetime-average treatment §14 already found necessary for causal
+values) and the falsification gate (does a *novel* symbol, paired with a
+concept the agent already knows, transfer that concept's value/behavior
+correctly — the same shape as §11's original transfer test, one layer up
+in abstraction). Session paused here deliberately rather than starting
+this under time pressure.
+
 ## 16. Standing rules (don't relitigate these)
 
 
